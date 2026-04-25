@@ -1,3 +1,5 @@
+TRUNCATE TABLE Users RESTART IDENTITY CASCADE;
+
 CREATE TABLE IF NOT EXISTS Category (
     category_id SERIAL PRIMARY KEY,
     category_name VARCHAR(100) NOT NULL
@@ -357,33 +359,6 @@ ORDER BY total_users DESC;
 
 
 --streamlit
-
-CREATE OR REPLACE VIEW dashboard_main_metrics AS
-SELECT 
-    p.product_name,
-    p.brand,
-    c.category_name,
-    v.vendor_name,
-    v.sustainability_score,
-    v.is_npo_partner,
-    v.location_type, -- This was the missing piece!
-    ph.recorded_price AS current_price,
-    ph.recorded_at AS last_updated
-FROM Product p
-JOIN Category c ON p.category_id = c.category_id
-JOIN Price_Listing pl ON p.product_id = pl.product_id
-JOIN Vendor v ON pl.vendor_id = v.vendor_id
-JOIN (
-    SELECT listing_id, recorded_price, recorded_at,
-           ROW_NUMBER() OVER(PARTITION BY listing_id ORDER BY recorded_at DESC) as rn
-    FROM Price_History
-) ph ON pl.listing_id = ph.listing_id
-WHERE ph.rn = 1;
-
---
-SELECT * FROM dashboard_main_metrics;
-
-
 --analysing user preference 
 
 CREATE OR REPLACE VIEW user_preference_summary AS
@@ -440,3 +415,187 @@ SELECT
 FROM Users
 GROUP BY impact_preference
 ORDER BY total_users DESC;
+
+
+--checking number of sellers
+
+SELECT product_name, COUNT(vendor_name) as seller_count
+FROM dashboard_main_metrics
+GROUP BY product_name
+HAVING COUNT(vendor_name) > 1;
+
+
+-- adding extra column to convert btob
+
+-- STEP 1: Add procurement columns to Vendor table
+ALTER TABLE Vendor 
+ADD COLUMN IF NOT EXISTS certification_status VARCHAR(100),
+ADD COLUMN IF NOT EXISTS lead_time_days INTEGER,
+ADD COLUMN IF NOT EXISTS social_impact_category VARCHAR(100);
+
+ -- STEP 2: Populate new columns for existing vendors
+UPDATE Vendor SET
+    certification_status    = 'USDA Organic, B-Corp',
+    lead_time_days          = 3,
+    social_impact_category  = 'Food Security'
+WHERE vendor_name = 'East Bay Community Garden';
+ 
+UPDATE Vendor SET
+    certification_status    = 'Fair Trade',
+    lead_time_days          = 5,
+    social_impact_category  = 'Worker Equity'
+WHERE vendor_name = 'San Jose Ethical Apparel';
+ 
+UPDATE Vendor SET
+    certification_status    = 'Fair Trade, Rainforest Alliance',
+    lead_time_days          = 10,
+    social_impact_category  = 'Smallholder Farmers'
+WHERE vendor_name = 'Global Fair Trade Hub';
+ 
+UPDATE Vendor SET
+    certification_status    = 'USDA Organic',
+    lead_time_days          = 2,
+    social_impact_category  = 'Youth Education'
+WHERE vendor_name = 'The Sustainable Pantry';
+ 
+UPDATE Vendor SET
+    certification_status    = 'B-Corp',
+    lead_time_days          = 1,
+    social_impact_category  = 'Waste Reduction'
+WHERE vendor_name = 'Hayward Eco-Refill Station';
+ 
+UPDATE Vendor SET
+    certification_status    = 'Fair Trade, B-Corp',
+    lead_time_days          = 4,
+    social_impact_category  = 'Local Arts & Jobs'
+WHERE vendor_name = 'Oakland Artisan Collective';
+ 
+UPDATE Vendor SET
+    certification_status    = NULL,
+    lead_time_days          = 7,
+    social_impact_category  = 'Clean Energy'
+WHERE vendor_name = 'Green-Tech Solutions';
+ 
+UPDATE Vendor SET
+    certification_status    = 'B-Corp, Thrift Certified',
+    lead_time_days          = 2,
+    social_impact_category  = 'Reforestation'
+WHERE vendor_name = 'Thrift & Thrive NPO';
+ 
+UPDATE Vendor SET
+    certification_status    = 'USDA Organic',
+    lead_time_days          = 3,
+    social_impact_category  = 'Regenerative Farming'
+WHERE vendor_name = 'Pacific Organic Co-op';
+ 
+UPDATE Vendor SET
+    certification_status    = 'Fair Trade, Rainforest Alliance',
+    lead_time_days          = 8,
+    social_impact_category  = 'Women Empowerment'
+WHERE vendor_name = 'Kindness Coffee Project';
+ 
+-- STEP 3: Drop and recreate dashboard_main_metrics to include new columns
+DROP VIEW IF EXISTS dashboard_main_metrics;
+ 
+CREATE OR REPLACE VIEW dashboard_main_metrics AS
+SELECT 
+    p.product_name,
+    p.brand,
+    c.category_name,
+    v.vendor_name,
+    v.sustainability_score,
+    v.is_npo_partner,
+    v.location_type,
+    v.certification_status,
+    v.lead_time_days,
+    v.social_impact_category,
+    ph.recorded_price AS current_price,
+    ph.recorded_at    AS last_updated
+FROM Product p
+JOIN Category c       ON p.category_id  = c.category_id
+JOIN Price_Listing pl ON p.product_id   = pl.product_id
+JOIN Vendor v         ON pl.vendor_id   = v.vendor_id
+JOIN (
+    SELECT listing_id, recorded_price, recorded_at,
+           ROW_NUMBER() OVER(PARTITION BY listing_id ORDER BY recorded_at DESC) AS rn
+    FROM Price_History
+) ph ON pl.listing_id = ph.listing_id AND ph.rn = 1;
+ 
+-- STEP 4: New Procurement Analytics View
+-- Powers the "Supplier Fit Score" and comparison matrix in Streamlit
+CREATE OR REPLACE VIEW view_procurement_analytics AS
+SELECT
+    v.vendor_id,
+    v.vendor_name,
+    v.is_npo_partner,
+    v.location_type,
+    v.sustainability_score,
+    v.certification_status,
+    v.lead_time_days,
+    v.social_impact_category,
+    p.product_name,
+    c.category_name,
+    ph_latest.recorded_price                                        AS current_price,
+    ph_avg.avg_price,
+    -- Supplier Fit Score: Sustainability(50%) + Local Bonus(30%) - Price Penalty(20%)
+    ROUND(
+        (v.sustainability_score * 0.5)
+        + (CASE WHEN v.location_type = 'Local' THEN 30 ELSE 0 END)
+        - (CASE
+               WHEN ph_latest.recorded_price > ph_avg.avg_price
+               THEN LEAST((ph_latest.recorded_price - ph_avg.avg_price) / ph_avg.avg_price * 20, 20)
+               ELSE 0
+           END),
+    2) AS supplier_fit_score,
+    -- Estimated annual CO2 savings vs. online baseline (kg CO2)
+    CASE WHEN v.location_type = 'Local' THEN 120 ELSE 0 END         AS annual_co2_saved_kg,
+    -- Estimated annual community $ impact per 1000 units ordered
+    CASE WHEN v.is_npo_partner THEN 5000 ELSE 1000 END              AS community_impact_per_1k_units
+FROM Vendor v
+JOIN Price_Listing pl  ON v.vendor_id    = pl.vendor_id
+JOIN Product p         ON pl.product_id  = p.product_id
+JOIN Category c        ON p.category_id  = c.category_id
+JOIN (
+    SELECT listing_id, recorded_price,
+           ROW_NUMBER() OVER(PARTITION BY listing_id ORDER BY recorded_at DESC) AS rn
+    FROM Price_History
+) ph_latest ON pl.listing_id = ph_latest.listing_id AND ph_latest.rn = 1
+JOIN (
+    SELECT listing_id, ROUND(AVG(recorded_price), 2) AS avg_price
+    FROM Price_History
+    GROUP BY listing_id
+) ph_avg ON pl.listing_id = ph_avg.listing_id;
+ 
+-- Quick sanity checks
+SELECT * FROM view_procurement_analytics ORDER BY supplier_fit_score DESC;
+SELECT * FROM dashboard_main_metrics;
+
+--  ERROR 
+DROP VIEW IF EXISTS dashboard_main_metrics CASCADE;
+DROP VIEW IF EXISTS view_procurement_analytics CASCADE;
+
+-- running dashborad querry again 
+
+CREATE OR REPLACE VIEW dashboard_main_metrics AS
+SELECT 
+    p.product_name,
+    p.brand,
+    c.category_name,
+    v.vendor_name,
+    v.sustainability_score,
+    v.is_npo_partner,
+    v.location_type,
+    v.certification_status,
+    v.lead_time_days,
+    v.social_impact_category,
+    ph.recorded_price AS current_price,
+    ph.recorded_at    AS last_updated
+FROM Product p
+JOIN Category c       ON p.category_id  = c.category_id
+JOIN Price_Listing pl ON p.product_id   = pl.product_id
+JOIN Vendor v         ON pl.vendor_id   = v.vendor_id
+JOIN (
+    SELECT listing_id, recorded_price, recorded_at,
+           ROW_NUMBER() OVER(PARTITION BY listing_id ORDER BY recorded_at DESC) AS rn
+    FROM Price_History
+) ph ON pl.listing_id = ph.listing_id AND ph.rn = 1;
