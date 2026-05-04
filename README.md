@@ -1,179 +1,261 @@
-# EthiTrack Procurement Dashboard
+# 🌿 EthiTrack — B2B Ethical Procurement Dashboard
 
-EthiTrack is a Streamlit dashboard for ethical B2B procurement analysis. It helps an analyst compare suppliers by price, sustainability score, nonprofit partnership status, certifications, lead time, local sourcing, and estimated social impact.
+EthiTrack is a Streamlit-based procurement intelligence dashboard that helps organizations make ethical, cost-aware purchasing decisions. It ranks suppliers using a multi-factor scoring engine, highlights NPO partners and sustainability certifications, and includes an AI-powered chatbot assistant that answers procurement questions in natural language — all backed by a PostgreSQL database.
 
-The project is designed for an organizational buyer, not an individual consumer. The old `Users` table and consumer preference dashboard were removed.
+---
 
-## Business Problem
+## 📋 Table of Contents
 
-Procurement teams need to choose suppliers that are affordable, reliable, sustainable, and aligned with organizational social-impact goals. EthiTrack supports that decision by combining PostgreSQL analytics, Streamlit dashboards, and a simple AI price-risk model.
+- [Features](#features)
+- [Tech Stack](#tech-stack)
+- [Database Schema](#database-schema)
+- [AI Chatbot](#ai-chatbot)
+- [Dashboard Pages](#dashboard-pages)
+- [Getting Started](#getting-started)
+- [Configuration](#configuration)
+- [Project Structure](#project-structure)
+- [Sample Data](#sample-data)
 
-## Main Features
+---
 
-- Executive supplier KPI overview
-- Product-level supplier ranking
-- Vendor comparison matrix
-- Annual cost and impact estimate
-- AI Supplier Advisor using historical prices
-- SQL views for supplier fit score, NPO gap analysis, volatility, risk, and substitution opportunities
+## ✨ Features
 
-The app no longer includes a Streamlit dropdown that displays raw SQL queries. SQL logic stays in the database file.
+- **Supplier Fit Score** — SQL-calculated composite score weighing sustainability, NPO status, location, certifications, lead time, and price competitiveness
+- **AI Procurement Chatbot** — Rule-based assistant that recommends suppliers, compares NPO vs commercial partners, and answers natural-language questions about price, lead time, certifications, and social impact
+- **Multi-Goal Rankings** — Suppliers ranked by Balanced, Lowest Cost, Social Impact, Sustainability, or Reliability priorities
+- **NPO vs Commercial Gap Analysis** — Side-by-side comparison of ethical and commercial supplier metrics
+- **Annual Impact Projections** — Estimate yearly spend, CO2 savings, and community impact at a given order volume
+- **Price Volatility Tracking** — Historical price data used to flag suppliers with unstable pricing
+- **Interactive Filters** — Filter by product, supply chain type (Local / Online), and supplier type (NPO / Commercial)
 
-## Project Files
+---
 
-- `streamlit_app.py`: Main Streamlit app. Use this as the GitHub and Streamlit Cloud entrypoint.
-- `Streamlit _610_project_2.py`: Compatibility wrapper that runs `streamlit_app.py`.
-- `project_btob_610.sql`: PostgreSQL setup file for tables, sample data, and views.
-- `requirements.txt`: Python dependencies.
-- `.streamlit/secrets.toml.example`: Example database credentials for deployment.
+## 🛠 Tech Stack
 
-## Database Setup
+| Layer | Technology |
+|---|---|
+| Frontend / App | [Streamlit](https://streamlit.io/) |
+| Database | PostgreSQL |
+| Python DB Driver | psycopg2 |
+| Data Processing | pandas |
+| AI Chatbot | Rule-based NLP engine (pure Python) |
 
-Create a PostgreSQL database named:
+---
 
-```text
-project_610_npo_sales
+## 🗄 Database Schema
+
+The SQL setup script (`project_btob_610.sql`) creates the following tables and views:
+
+### Tables
+
+```
+Category      → category_id, category_name
+Vendor        → vendor_id, vendor_name, is_npo_partner, location_type,
+                sustainability_score, certification_status, lead_time_days,
+                social_impact_category
+Product       → product_id, product_name, brand, category_id
+Price_Listing → listing_id, product_id, vendor_id, current_stock_status
+Price_History → history_id, listing_id, recorded_price, recorded_at
 ```
 
-Then run:
+### Views
+
+| View | Purpose |
+|---|---|
+| `dashboard_main_metrics` | Full supplier + product + latest price rollup for the main table |
+| `view_procurement_analytics` | Adds supplier fit score, CO2, and community impact estimates |
+| `npo_impact_gap` | Aggregated NPO vs commercial comparison |
+| `view_efficiency_leaders` | High-sustainability suppliers priced below product average |
+| `view_supply_chain_risk` | Lead time risk analysis by social impact category |
+| `view_npo_substitution_opportunities` | Suggests NPO alternatives to commercial suppliers |
+| `view_price_volatility` | Price standard deviation per vendor-product pair |
+
+### Supplier Fit Score Formula
+
+The score is computed in SQL inside `view_procurement_analytics`:
+
+```
+Supplier Fit Score =
+  (sustainability_score × 0.40)
+  + 15 if Local
+  + 15 if NPO Partner
+  + 10 if Certified
+  + 10/7/4/1 based on lead time tier
+  + 0–10 based on price vs market average
+```
+
+---
+
+## 🤖 AI Chatbot
+
+Every dashboard page includes a context-aware **AI Procurement Chatbot** powered by a rule-based NLP engine (`answer_chatbot_question`).
+
+### What It Can Answer
+
+| Question Type | Example |
+|---|---|
+| Supplier recommendation | "Which supplier is best for social impact?" |
+| Lowest cost | "Which vendor is the cheapest for Organic Tomatoes?" |
+| Fastest delivery | "Which supplier has the fastest lead time?" |
+| NPO vs commercial | "Compare NPO and commercial suppliers." |
+| Sustainability | "Which vendor has the highest sustainability score?" |
+| Certifications | "Which suppliers are certified?" |
+| Vendor products | "What products does Thrift & Thrive NPO sell?" |
+| Product vendors | "Who sells Single Origin Espresso?" |
+| Annual impact | "Which supplier gives the best annual community impact?" |
+
+### How It Works
+
+1. **Intent Detection** — Keywords in the question trigger specific logic branches (e.g., "cheapest" → price sort, "fastest" → lead time sort, "recommend" → multi-factor ranking).
+2. **Goal Inference** — Words like "budget", "community", "certified", or "fast" automatically shift the ranking goal (Lowest Cost, Social Impact, Sustainability, Reliability).
+3. **Entity Matching** — Vendor names and product names are extracted directly from the question text and matched against live database values.
+4. **Contextual Scoping** — The chatbot uses the currently filtered supplier dataset for the active page, so answers reflect the user's selected product and filters.
+5. **Explanation Builder** — Recommendations include the supplier type, location, sustainability score, lead time, price vs market average, fit score, and optional annual volume projections.
+
+### Ranking Goals & Weights
+
+| Goal | Key Weights |
+|---|---|
+| **Balanced** | Fit score 45%, Price 20%, Impact 15%, Speed 10%, Sustainability 10% |
+| **Lowest Cost** | Price 55%, Fit score 20%, Speed 15%, Sustainability 10% |
+| **Social Impact** | Impact 40%, Sustainability 25%, Fit score 20%, Price 15% |
+| **Sustainability** | Sustainability 45%, Certification 20%, Fit score 20%, Impact 15% |
+| **Reliability** | Speed 35%, Volatility 25%, Fit score 25%, Price 15% |
+
+---
+
+## 📊 Dashboard Pages
+
+### 1. Executive Overview
+- KPI metrics: average fit score, certified listings, NPO vendors, average lead time
+- AI Insight Summary for the top balanced supplier
+- NPO vs commercial summary table
+- Supplier Fit Score bar chart
+- Full supplier listing table
+
+### 2. Supplier Ranking
+- Ranked supplier table for a selected product
+- Price vs Sustainability scatter chart
+- Best SQL-ranked supplier callout
+
+### 3. Vendor Comparison
+- Side-by-side comparison matrix for selected vendors
+- Score comparison bar chart (fit score + sustainability)
+
+### 4. Annual Impact Report
+- Adjustable annual order volume slider (100–50,000 units)
+- Projected annual spend, estimated CO2 savings, and community impact per supplier
+- Recommended supplier by fit score and projected spend
+
+Each page ends with the **AI Procurement Chatbot** scoped to that page's context.
+
+---
+
+## 🚀 Getting Started
+
+### Prerequisites
+
+- Python 3.9+
+- PostgreSQL 14+
+- pip
+
+### 1. Clone the Repository
 
 ```bash
-psql -d project_610_npo_sales -f project_btob_610.sql
+git clone https://github.com/your-username/ethitrack.git
+cd ethitrack
 ```
 
-You can also run the full SQL file in pgAdmin.
-
-## Local Installation
-
-Create and activate a virtual environment:
+### 2. Install Dependencies
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
+pip install streamlit psycopg2-binary pandas
 ```
 
-Install dependencies:
+### 3. Set Up the Database
+
+Create the database in PostgreSQL and run the setup script:
 
 ```bash
-pip install -r requirements.txt
+psql -U postgres -c "CREATE DATABASE project_610_npo_sales;"
+psql -U postgres -d project_610_npo_sales -f project_btob_610.sql
 ```
 
-Run the app:
+### 4. Configure the Connection
+
+Choose one of the options in the [Configuration](#configuration) section below.
+
+### 5. Run the App
 
 ```bash
-python -m streamlit run streamlit_app.py
+streamlit run streamlit_app.py
 ```
 
-The app usually opens at:
+Open your browser to `http://localhost:8501`.
 
-```text
-http://localhost:8501
-```
+---
 
-## Database Credentials
+## ⚙️ Configuration
 
-For local development, the app reads database settings from environment variables if they exist:
+The app resolves the database connection in this priority order:
 
-```text
-DB_NAME
-DB_USER
-DB_PASSWORD
-DB_HOST
-DB_PORT
-```
-
-If those are not set, it uses:
-
-```text
-database: project_610_npo_sales
-user: your computer username
-password: blank
-host: localhost
-port: 5432
-```
-
-For Streamlit Community Cloud, add database credentials in app secrets instead of committing passwords to GitHub.
-
-Example secrets:
+1. **Streamlit Secrets** (recommended for deployment) — create `.streamlit/secrets.toml`:
 
 ```toml
 [database]
-dbname = "project_610_npo_sales"
-user = "your_database_user"
-password = "your_database_password"
-host = "your_database_host"
-port = "5432"
+dbname   = "project_610_npo_sales"
+user     = "your_pg_user"
+password = "your_pg_password"
+host     = "localhost"
+port     = "5432"
 ```
 
-Do not commit the real `.streamlit/secrets.toml` file.
+2. **Environment Variables**:
 
-## GitHub And Web Access
-
-GitHub stores the code, but it does not directly host a running Streamlit Python app like a normal static website. To give others a web link, deploy the GitHub repository on Streamlit Community Cloud.
-
-Recommended deployment steps:
-
-1. Push this folder to a GitHub repository.
-2. Make sure `streamlit_app.py`, `requirements.txt`, and `project_btob_610.sql` are included.
-3. Go to Streamlit Community Cloud.
-4. Create a new app from your GitHub repository.
-5. Set the entrypoint file to `streamlit_app.py`.
-6. Add database credentials in Streamlit secrets.
-7. Deploy and share the generated `streamlit.app` URL.
-
-Important: a deployed app cannot connect to a PostgreSQL database that exists only on your laptop as `localhost`. For public web access, use a hosted PostgreSQL database or run the app locally.
-
-## Dashboard Pages
-
-### Executive Overview
-
-Shows high-level KPIs such as average supplier fit score, certified supplier listings, NPO partner vendors, and average lead time.
-
-### Supplier Ranking
-
-Ranks suppliers for a selected product using the SQL-based supplier fit score.
-
-### Vendor Comparison
-
-Lets analysts compare selected vendors side by side by price, sustainability, lead time, certification, NPO status, and social impact category.
-
-### Annual Impact Report
-
-Uses order volume to estimate projected annual spend, CO2 savings, and community impact.
-
-### AI Supplier Advisor
-
-Uses linear regression on historical prices to predict the next expected supplier price. The app then labels supplier price risk as Low, Medium, or High and adjusts the recommendation score.
-
-## Supplier Fit Score
-
-The SQL view calculates supplier fit score out of 100:
-
-```text
-Supplier Fit Score =
-  sustainability contribution
-+ local supplier bonus
-+ NPO partner bonus
-+ certification bonus
-+ lead time score
-+ price competitiveness score
+```bash
+export DB_NAME=project_610_npo_sales
+export DB_USER=your_pg_user
+export DB_PASSWORD=your_pg_password
+export DB_HOST=localhost
+export DB_PORT=5432
 ```
 
-This lets the analyst compare suppliers using both business and social-impact criteria.
+3. **Defaults** — falls back to `localhost:5432`, database `project_610_npo_sales`, and the current system user with no password.
 
-## Requirements
+---
 
-```txt
-streamlit
-pandas
-psycopg2-binary
-scikit-learn
-numpy
+## 📁 Project Structure
+
+```
+ethitrack/
+├── streamlit_app.py          # Main Streamlit application
+├── project_btob_610.sql      # PostgreSQL schema, seed data, and views
+├── .streamlit/
+│   └── secrets.toml          # DB credentials (not committed to git)
+└── README.md
 ```
 
-## Notes
+> Add `.streamlit/secrets.toml` to `.gitignore` to keep credentials out of version control.
 
-- Run `project_btob_610.sql` before launching Streamlit.
-- The app depends on `view_procurement_analytics`, `dashboard_main_metrics`, and `npo_impact_gap`.
-- The Streamlit app no longer uses `Users` or `user_preference_summary`.
-- The SQL file includes optional analysis views for professor review, but the app does not show raw SQL queries in the UI.
+---
+
+## 🌱 Sample Data
+
+The SQL script seeds the database with realistic Bay Area procurement data:
+
+**5 Product Categories** — Fair Trade Coffee, Ethical Apparel, Organic Produce, Reusable Goods, Eco Cleaning
+
+**12 Vendors** including:
+- East Bay Community Garden (NPO, Local, sustainability score 95)
+- Kindness Coffee Project (NPO, Online, sustainability score 93)
+- Thrift & Thrive NPO (NPO, Local, sustainability score 98)
+- Pacific Organic Co-op (Commercial, Local, sustainability score 84)
+- Green-Tech Solutions (Commercial, Online, sustainability score 65)
+
+**5 Products** with 4 vendor listings each and 4 months of price history (Jan–Apr 2026).
+
+---
+
+## 📝 License
+
+This project was developed as an academic B2B procurement analytics capstone. Feel free to fork and adapt with attribution.
