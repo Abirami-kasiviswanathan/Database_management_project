@@ -1,4 +1,11 @@
+-- EthiTrack B2B Procurement Database Setup
+-- Run this full script in PostgreSQL before starting the Streamlit app.
+
 -- CLEAN RESET
+DROP VIEW IF EXISTS view_price_volatility CASCADE;
+DROP VIEW IF EXISTS view_npo_substitution_opportunities CASCADE;
+DROP VIEW IF EXISTS view_supply_chain_risk CASCADE;
+DROP VIEW IF EXISTS view_efficiency_leaders CASCADE;
 DROP VIEW IF EXISTS dashboard_main_metrics CASCADE;
 DROP VIEW IF EXISTS view_procurement_analytics CASCADE;
 DROP VIEW IF EXISTS npo_impact_gap CASCADE;
@@ -20,10 +27,10 @@ CREATE TABLE Vendor (
     vendor_id SERIAL PRIMARY KEY,
     vendor_name VARCHAR(150) NOT NULL,
     is_npo_partner BOOLEAN DEFAULT FALSE,
-    location_type VARCHAR(50),
-    sustainability_score INT CHECK (sustainability_score <= 100),
+    location_type VARCHAR(50) CHECK (location_type IN ('Local', 'Online')),
+    sustainability_score INT CHECK (sustainability_score BETWEEN 0 AND 100),
     certification_status VARCHAR(100),
-    lead_time_days INT,
+    lead_time_days INT CHECK (lead_time_days >= 0),
     social_impact_category VARCHAR(100)
 );
 
@@ -31,21 +38,21 @@ CREATE TABLE Product (
     product_id SERIAL PRIMARY KEY,
     product_name VARCHAR(150) NOT NULL,
     brand VARCHAR(100),
-    category_id INT REFERENCES Category(category_id)
+    category_id INT NOT NULL REFERENCES Category(category_id)
 );
 
 CREATE TABLE Price_Listing (
     listing_id SERIAL PRIMARY KEY,
-    product_id INT REFERENCES Product(product_id),
-    vendor_id INT REFERENCES Vendor(vendor_id),
+    product_id INT NOT NULL REFERENCES Product(product_id),
+    vendor_id INT NOT NULL REFERENCES Vendor(vendor_id),
     current_stock_status VARCHAR(50)
 );
 
 CREATE TABLE Price_History (
     history_id SERIAL PRIMARY KEY,
-    listing_id INT REFERENCES Price_Listing(listing_id),
-    recorded_price DECIMAL(10,2),
-    recorded_at TIMESTAMP
+    listing_id INT NOT NULL REFERENCES Price_Listing(listing_id),
+    recorded_price DECIMAL(10,2) CHECK (recorded_price > 0),
+    recorded_at TIMESTAMP NOT NULL
 );
 
 -- CATEGORIES
@@ -57,8 +64,8 @@ INSERT INTO Category (category_name) VALUES
 ('Eco Cleaning');
 
 -- PROCUREMENT-FOCUSED VENDORS
-INSERT INTO Vendor 
-(vendor_name, is_npo_partner, location_type, sustainability_score, certification_status, lead_time_days, social_impact_category) 
+INSERT INTO Vendor
+(vendor_name, is_npo_partner, location_type, sustainability_score, certification_status, lead_time_days, social_impact_category)
 VALUES
 ('East Bay Community Garden', TRUE, 'Local', 95, 'USDA Organic, B-Corp', 3, 'Food Security'),
 ('San Jose Ethical Apparel', FALSE, 'Local', 82, 'Fair Trade', 5, 'Worker Equity'),
@@ -87,22 +94,18 @@ INSERT INTO Price_Listing (product_id, vendor_id, current_stock_status) VALUES
 (1, 3, 'In Stock'),
 (1, 4, 'In Stock'),
 (1, 11, 'In Stock'),
-
 (2, 2, 'In Stock'),
 (2, 6, 'In Stock'),
 (2, 8, 'Limited Stock'),
 (2, 11, 'In Stock'),
-
 (3, 1, 'In Stock'),
 (3, 4, 'In Stock'),
 (3, 9, 'In Stock'),
 (3, 12, 'In Stock'),
-
 (4, 10, 'In Stock'),
 (4, 3, 'In Stock'),
 (4, 11, 'In Stock'),
 (4, 4, 'Limited Stock'),
-
 (5, 6, 'In Stock'),
 (5, 8, 'In Stock'),
 (5, 2, 'In Stock'),
@@ -124,12 +127,8 @@ price_dates(recorded_at, multiplier) AS (
     ('2026-03-15 10:00:00'::timestamp, 1.00),
     ('2026-04-22 10:00:00'::timestamp, 1.03)
 )
-
-
-
-
 INSERT INTO Price_History (listing_id, recorded_price, recorded_at)
-SELECT 
+SELECT
     bp.listing_id,
     ROUND((bp.base_price * pd.multiplier)::numeric, 2),
     pd.recorded_at
@@ -140,20 +139,22 @@ ORDER BY bp.listing_id, pd.recorded_at;
 -- VIEW 1: MAIN DASHBOARD DATA
 CREATE OR REPLACE VIEW dashboard_main_metrics AS
 WITH latest_price AS (
-    SELECT 
+    SELECT
         listing_id,
         recorded_price,
         recorded_at,
         ROW_NUMBER() OVER (
-            PARTITION BY listing_id 
+            PARTITION BY listing_id
             ORDER BY recorded_at DESC
         ) AS rn
     FROM Price_History
 )
-SELECT 
+SELECT
+    p.product_id,
     p.product_name,
     p.brand,
     c.category_name,
+    v.vendor_id,
     v.vendor_name,
     v.sustainability_score,
     v.is_npo_partner,
@@ -161,6 +162,7 @@ SELECT
     v.certification_status,
     v.lead_time_days,
     v.social_impact_category,
+    pl.current_stock_status,
     lp.recorded_price AS current_price,
     lp.recorded_at AS last_updated
 FROM Product p
@@ -172,18 +174,18 @@ JOIN latest_price lp ON pl.listing_id = lp.listing_id AND lp.rn = 1;
 -- VIEW 2: PROCUREMENT ANALYTICS
 CREATE OR REPLACE VIEW view_procurement_analytics AS
 WITH latest_price AS (
-    SELECT 
+    SELECT
         listing_id,
         recorded_price,
         recorded_at,
         ROW_NUMBER() OVER (
-            PARTITION BY listing_id 
+            PARTITION BY listing_id
             ORDER BY recorded_at DESC
         ) AS rn
     FROM Price_History
 ),
 market_avg AS (
-    SELECT 
+    SELECT
         pl.product_id,
         ROUND(AVG(ph.recorded_price), 2) AS avg_market_price
     FROM Price_Listing pl
@@ -191,8 +193,10 @@ market_avg AS (
     GROUP BY pl.product_id
 )
 SELECT
+    p.product_id,
     p.product_name,
     c.category_name,
+    v.vendor_id,
     v.vendor_name,
     v.is_npo_partner,
     v.location_type,
@@ -200,9 +204,9 @@ SELECT
     v.certification_status,
     v.lead_time_days,
     v.social_impact_category,
+    pl.current_stock_status,
     lp.recorded_price AS current_price,
     ma.avg_market_price,
-
     ROUND(
         (v.sustainability_score * 0.40)
         + CASE WHEN v.location_type = 'Local' THEN 15 ELSE 0 END
@@ -216,20 +220,21 @@ SELECT
           END
         + CASE
             WHEN lp.recorded_price <= ma.avg_market_price THEN 10
-            ELSE GREATEST(0, 10 - (((lp.recorded_price - ma.avg_market_price) / ma.avg_market_price) * 20))
+            ELSE GREATEST(
+                0,
+                10 - (((lp.recorded_price - ma.avg_market_price) / ma.avg_market_price) * 20)
+            )
           END,
-    2) AS supplier_fit_score,
-
-    CASE 
-        WHEN v.location_type = 'Local' THEN 120 
-        ELSE 0 
+        2
+    ) AS supplier_fit_score,
+    CASE
+        WHEN v.location_type = 'Local' THEN 120
+        ELSE 0
     END AS annual_co2_saved_kg_per_1000_units,
-
-    CASE 
-        WHEN v.is_npo_partner = TRUE THEN 5000 
-        ELSE 1000 
+    CASE
+        WHEN v.is_npo_partner = TRUE THEN 5000
+        ELSE 1000
     END AS community_impact_per_1000_units
-
 FROM Price_Listing pl
 JOIN Product p ON pl.product_id = p.product_id
 JOIN Category c ON p.category_id = c.category_id
@@ -239,7 +244,7 @@ JOIN market_avg ma ON p.product_id = ma.product_id;
 
 -- VIEW 3: NPO VS COMMERCIAL GAP
 CREATE OR REPLACE VIEW npo_impact_gap AS
-SELECT 
+SELECT
     is_npo_partner,
     COUNT(*) AS supplier_options,
     ROUND(AVG(current_price), 2) AS avg_current_price,
@@ -248,66 +253,58 @@ SELECT
 FROM dashboard_main_metrics
 GROUP BY is_npo_partner;
 
--- TEST QUERIES
-SELECT * 
-FROM view_procurement_analytics
-ORDER BY product_name, supplier_fit_score DESC;
-
-SELECT * 
-FROM npo_impact_gap;
-
---QUERY 1 
---Problem: The "Impact-Cost" Conflict
-
---Business Question: "Are we overpaying just to be ethical, or can we find vendors that are both cheap and highly sustainable?"
---Solution: This query identifies "Efficiency Leaders"—vendors whose sustainability score is above the category average but whose price is below the category average.
-
-SELECT 
-    p.product_name,
-    v.vendor_name,
-    v.sustainability_score,
-    lp.recorded_price,
-    -- Window function to show how much we save vs the average
-    ROUND(AVG(lp.recorded_price) OVER(PARTITION BY p.product_id) - lp.recorded_price, 2) as savings_vs_avg
-FROM Product p
-JOIN Price_Listing pl ON p.product_id = pl.product_id
-JOIN Vendor v ON pl.vendor_id = v.vendor_id
-JOIN (
-    SELECT listing_id, recorded_price, 
-           ROW_NUMBER() OVER(PARTITION BY listing_id ORDER BY recorded_at DESC) as rn
+-- OPTIONAL ANALYSIS VIEW 1: IMPACT-COST CONFLICT
+CREATE OR REPLACE VIEW view_efficiency_leaders AS
+WITH latest_price AS (
+    SELECT
+        listing_id,
+        recorded_price,
+        ROW_NUMBER() OVER (
+            PARTITION BY listing_id
+            ORDER BY recorded_at DESC
+        ) AS rn
     FROM Price_History
-) lp ON pl.listing_id = lp.listing_id AND lp.rn = 1
-WHERE v.sustainability_score > (SELECT AVG(sustainability_score) FROM Vendor)
-  AND lp.recorded_price < (
-      SELECT AVG(ph2.recorded_price) 
-      FROM Price_History ph2 
-      JOIN Price_Listing pl2 ON ph2.listing_id = pl2.listing_id 
-      WHERE pl2.product_id = p.product_id
-  )
-ORDER BY v.sustainability_score DESC;
+),
+latest_supplier_prices AS (
+    SELECT
+        p.product_id,
+        p.product_name,
+        v.vendor_name,
+        v.sustainability_score,
+        lp.recorded_price,
+        AVG(lp.recorded_price) OVER (PARTITION BY p.product_id) AS product_avg_price
+    FROM Product p
+    JOIN Price_Listing pl ON p.product_id = pl.product_id
+    JOIN Vendor v ON pl.vendor_id = v.vendor_id
+    JOIN latest_price lp ON pl.listing_id = lp.listing_id AND lp.rn = 1
+)
+SELECT
+    product_name,
+    vendor_name,
+    sustainability_score,
+    recorded_price,
+    ROUND(product_avg_price - recorded_price, 2) AS savings_vs_avg
+FROM latest_supplier_prices
+WHERE sustainability_score > (SELECT AVG(sustainability_score) FROM Vendor)
+  AND recorded_price < product_avg_price;
 
---QUERY 2 
---2. Problem: Supply Chain Reliability Risk
---Business Question: "Which ethical vendors are slowing down our operations with long lead times?"
---Solution: This query uses Conditional Aggregation to compare lead times across different social impact categories. It helps an employer see which "causes" might need better logistics planning.
-SELECT 
+-- OPTIONAL ANALYSIS VIEW 2: SUPPLY CHAIN RELIABILITY RISK
+CREATE OR REPLACE VIEW view_supply_chain_risk AS
+SELECT
     social_impact_category,
-    COUNT(vendor_id) as vendor_count,
-    ROUND(AVG(lead_time_days), 1) as avg_lead_time,
-    -- Logic: Count how many vendors in this category are "Slow" (over 5 days)
-    SUM(CASE WHEN lead_time_days > 5 THEN 1 ELSE 0 END) as slow_vendor_count,
-    -- Calculate the percentage of the category that is high-risk
-    ROUND((SUM(CASE WHEN lead_time_days > 5 THEN 1 ELSE 0 END)::NUMERIC / COUNT(vendor_id)) * 100, 1) as percent_at_risk
+    COUNT(vendor_id) AS vendor_count,
+    ROUND(AVG(lead_time_days), 1) AS avg_lead_time,
+    SUM(CASE WHEN lead_time_days > 5 THEN 1 ELSE 0 END) AS slow_vendor_count,
+    ROUND(
+        (SUM(CASE WHEN lead_time_days > 5 THEN 1 ELSE 0 END)::NUMERIC / COUNT(vendor_id)) * 100,
+        1
+    ) AS percent_at_risk
 FROM Vendor
-GROUP BY social_impact_category
-HAVING COUNT(vendor_id) > 0
-ORDER BY percent_at_risk DESC;
+GROUP BY social_impact_category;
 
---QUERY 3 
---3. Problem: Under-Utilized Social Partners
---Business Question: "Which products are we currently buying from commercial vendors that we could be buying from a local NPO?"
---Solution: This is a Self-Join (or a complex JOIN) that looks for "substitution opportunities." It shows an employer a commercial vendor currently in use and pairs it with a suggested NPO alternative for the same product.
-SELECT 
+-- OPTIONAL ANALYSIS VIEW 3: NPO SUBSTITUTION OPPORTUNITIES
+CREATE OR REPLACE VIEW view_npo_substitution_opportunities AS
+SELECT
     p.product_name,
     v_comm.vendor_name AS current_commercial_source,
     v_npo.vendor_name AS suggested_npo_alternative,
@@ -316,28 +313,23 @@ SELECT
 FROM Product p
 JOIN Price_Listing pl1 ON p.product_id = pl1.product_id
 JOIN Vendor v_comm ON pl1.vendor_id = v_comm.vendor_id
--- Self-joining back to the listings to find a different vendor for the same product
 JOIN Price_Listing pl2 ON p.product_id = pl2.product_id
 JOIN Vendor v_npo ON pl2.vendor_id = v_npo.vendor_id
-WHERE v_comm.is_npo_partner = FALSE 
+WHERE v_comm.is_npo_partner = FALSE
   AND v_npo.is_npo_partner = TRUE
-  AND v_comm.vendor_id != v_npo.vendor_id;
+  AND v_comm.vendor_id <> v_npo.vendor_id;
 
- --QUERY 4 
- --4. Problem: Price Instability (Budget Forecasting)
---Business Question: "Which vendors have the most volatile prices, making our annual budget hard to predict?"
---Solution: This query uses the Window Function STDDEV() (Standard Deviation). In data analytics, a high standard deviation means the price jumps around a lot, which employers hate because it makes budgeting impossible.
-SELECT 
+-- OPTIONAL ANALYSIS VIEW 4: PRICE VOLATILITY
+CREATE OR REPLACE VIEW view_price_volatility AS
+SELECT
     v.vendor_name,
     p.product_name,
-    ROUND(AVG(ph.recorded_price), 2) as average_price,
-    -- Standard Deviation shows price volatility
-    ROUND(STDDEV(ph.recorded_price), 2) as price_volatility_index,
-    COUNT(ph.history_id) as price_change_events
+    ROUND(AVG(ph.recorded_price), 2) AS average_price,
+    ROUND(STDDEV(ph.recorded_price), 2) AS price_volatility_index,
+    COUNT(ph.history_id) AS price_change_events
 FROM Vendor v
 JOIN Price_Listing pl ON v.vendor_id = pl.vendor_id
 JOIN Product p ON pl.product_id = p.product_id
 JOIN Price_History ph ON pl.listing_id = ph.listing_id
 GROUP BY v.vendor_name, p.product_name
-HAVING COUNT(ph.history_id) > 1
-ORDER BY price_volatility_index DESC;
+HAVING COUNT(ph.history_id) > 1;
